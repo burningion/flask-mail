@@ -185,11 +185,14 @@ class Connection(object):
             message.date = time.time()
 
         if self.host:
-            self.host.sendmail(sanitize_address(envelope_from or message.sender),
-                               list(sanitize_addresses(message.send_to)),
-                               message.as_bytes() if PY3 else message.as_string(),
-                               message.mail_options,
-                               message.rcpt_options)
+            try:
+                self.host.sendmail(sanitize_address(envelope_from or message.sender),
+                                   list(sanitize_addresses(message.send_to)),
+                                   message.as_bytes() if PY3 else message.as_string(),
+                                   message.mail_options,
+                                   message.rcpt_options)
+            except Exception as e:
+                current_app.logger.warn(e)
 
         email_dispatched.send(message, app=current_app._get_current_object())
 
@@ -243,7 +246,6 @@ class Message(object):
     :param recipients: list of email addresses
     :param body: plain text message
     :param html: HTML message
-    :param alts: A dict or an iterable to go through dict() that contains multipart alternatives
     :param sender: email sender address, or **MAIL_DEFAULT_SENDER** by default
     :param cc: CC list
     :param bcc: BCC list
@@ -260,7 +262,6 @@ class Message(object):
                  recipients=None,
                  body=None,
                  html=None,
-                 alts=None,
                  sender=None,
                  cc=None,
                  bcc=None,
@@ -284,7 +285,6 @@ class Message(object):
         self.cc = cc or []
         self.bcc = bcc or []
         self.body = body
-        self.alts = dict(alts or {})
         self.html = html
         self.date = date
         self.msgId = make_msgid()
@@ -297,17 +297,6 @@ class Message(object):
     @property
     def send_to(self):
         return set(self.recipients) | set(self.bcc or ()) | set(self.cc or ())
-
-    @property
-    def html(self):
-        return self.alts.get('html')
-
-    @html.setter
-    def html(self, value):
-        if value is None:
-            self.alts.pop('html', None)
-        else:
-            self.alts['html'] = value
 
     def _mimetext(self, text, subtype='plain'):
         """Creates a MIMEText object with the given subtype (default: 'plain')
@@ -323,10 +312,10 @@ class Message(object):
 
         attachments = self.attachments or []
 
-        if len(attachments) == 0 and not self.alts:
+        if len(attachments) == 0 and not self.html:
             # No html content and zero attachments means plain text
             msg = self._mimetext(self.body)
-        elif len(attachments) > 0 and not self.alts:
+        elif len(attachments) > 0 and not self.html:
             # No html and at least one attachment means multipart
             msg = MIMEMultipart()
             msg.attach(self._mimetext(self.body))
@@ -335,8 +324,7 @@ class Message(object):
             msg = MIMEMultipart()
             alternative = MIMEMultipart('alternative')
             alternative.attach(self._mimetext(self.body, 'plain'))
-            for mimetype, content in self.alts.items():
-                alternative.attach(self._mimetext(content, mimetype))
+            alternative.attach(self._mimetext(self.html, 'html'))
             msg.attach(alternative)
 
         if self.subject:
@@ -383,7 +371,7 @@ class Message(object):
                          attachment.disposition,
                          filename=filename)
 
-            for key, value in attachment.headers.items():
+            for key, value in attachment.headers:
                 f.add_header(key, value)
 
             msg.attach(f)
